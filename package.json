@@ -3,11 +3,11 @@
   "displayName": "Ollama Autopilot - Local LLM Autocomplete",
   "publisher": "dadul96",
   "author": {
-	  "name": "dadul96"
+    "name": "dadul96"
   },
   "icon": "images/ollama_autopilot_logo.png",
   "description": "Local LLM code autocomplete for VS Code powered by Ollama. Inline AI code completion - fully offline, no API keys, no cloud.",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/dadul96/ollama-autopilot"
@@ -20,23 +20,26 @@
     "Other"
   ],
   "keywords": [
-  "ollama",
-  "ollama vscode",
-  "ollama autocomplete",
-  "local llm",
-  "local ai",
-  "offline ai",
-  "code completion",
-  "inline completion",
-  "copilot alternative",
-  "github copilot alternative",
-  "ai autocomplete",
-  "llm autocomplete",
-  "vs code ai",
-  "open source copilot"
+    "ollama",
+    "ollama vscode",
+    "ollama autocomplete",
+    "local llm",
+    "local ai",
+    "offline ai",
+    "code completion",
+    "inline completion",
+    "copilot alternative",
+    "github copilot alternative",
+    "ai autocomplete",
+    "llm autocomplete",
+    "vs code ai",
+    "open source copilot"
   ],
   "license": "MIT",
-  "activationEvents": ["onLanguage"],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "keybindings": [
@@ -79,7 +82,10 @@
         },
         "ollama-autopilot.general.suggestionTrigger": {
           "type": "string",
-          "enum": ["automatic", "manual"],
+          "enum": [
+            "automatic",
+            "manual"
+          ],
           "default": "automatic",
           "enumDescriptions": [
             "Automatically triggers suggestions while typing & on the keybinding",
@@ -150,8 +156,12 @@
         },
         "ollama-autopilot.model.stopSequences": {
           "type": "array",
-          "default": ["\\n\\n", "```", "<EOT>", "<｜EOT｜>"],
-          "description": "Stop sequences strings that will halt response generation",
+          "default": [
+            "<EOT>",
+            "<|endoftext|>",
+            "<|im_end|>"
+          ],
+          "description": "Stop sequences strings that will halt response generation. Do NOT include ``` — instruct models often start completions with a markdown fence and would return empty.",
           "items": {
             "type": "string"
           }
@@ -191,13 +201,13 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "1.85.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "18.x",
-    "typescript-eslint": "^8.52.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.2",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.52.0"
   }
 }

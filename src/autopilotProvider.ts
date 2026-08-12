@@ -3,23 +3,27 @@ import { OllamaClient } from "./ollamaClient";
 import { ConfigHandler } from "./configHandler";
 import { GuiHandler } from "./guiHandler";
 
+type DebugFn = (msg: string) => void;
+
 export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
     private ollamaClient: OllamaClient;
     private configHandler: ConfigHandler;
     private guiHandler: GuiHandler;
+    private debugLog: DebugFn;
     private abortController?: AbortController;
     private debounceTimer?: NodeJS.Timeout;
     private snoozeTimeout?: NodeJS.Timeout;
     private isSnoozeActive: boolean;
     private configChangeDisposable?: vscode.Disposable;
 
-    constructor(ollamaClient: OllamaClient, configHandler: ConfigHandler, guiHandler: GuiHandler) {
+    constructor(ollamaClient: OllamaClient, configHandler: ConfigHandler, guiHandler: GuiHandler, debugLog: DebugFn = () => {}) {
         this.ollamaClient = ollamaClient;
         this.configHandler = configHandler;
         this.guiHandler = guiHandler;
+        this.debugLog = debugLog;
         this.isSnoozeActive = false;
 
-        this.configChangeDisposable = 
+        this.configChangeDisposable =
             this.configHandler.onConfigDidChange(() => {
                 if (!this.configHandler.autopilotEnabled) {
                     this.clearSnoozeTimer();
@@ -84,17 +88,6 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
     }
 
     private createPromptString(document: vscode.TextDocument, cursorPosition: vscode.Position): string {
-        /**
-         * Use temporary, unique tokens to avoid accidental replacement of
-         * "${textBeforeCursor}" or "${textAfterCursor}" when either piece
-         * contains the other's placeholder string.
-         * The order of the mapping is intentional:
-         *   1. normal placeholders → unique tokens
-         *   2. unique tokens → real text
-         * Replacing the “after‑cursor” might make the string operation
-         * slightly faster, since there is usually less or no code after
-         * the cursor.
-        */
         const textAfterCursorIntermediatePlaceholder: string = "pS7inMQx6FhGs289J3Uw7szRes";
         const textBeforeCursorIntermediatePlaceholder: string = "R1jq1M19LlM7XYhu5233y6OrqI";
 
@@ -117,45 +110,19 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
     }
 
     private cleanResponseString(responseString: string): string {
-        /**
-         * Removes surrounding Markdown triple-backtick fences from a response.
-         *
-         * - Supports optional language specifier (```ts, ```javascript, etc.)
-         * - Supports Unix (\n) and Windows (\r\n) line endings
-         * - Only removes fences if they appear at the very start and end
-         * - Removes opening fence even if closing fence is missing
-         * - Removes closing fence even if opening fence is missing
-         */
-
         if (!responseString) {
             return '';
         }
 
-        // trim whitespace that is clearly outside the code block:
-        const trimmedString = responseString.trim();
+        let s = responseString.trim();
 
-        /**
-         * Remove opening fence, if present
-         *
-         * ^              – match at start of string
-         * ```            – three literal backticks
-         * [^\r\n]*       – optional language specifier (any characters except newline)
-         * \r?\n          – newline (supports both \n and \r\n)
-         */
-        const withoutOpenString = trimmedString.replace(/^```[^\r\n]*\r?\n/, '');
+        // Drop common chatty prefixes models invent for "completion" prompts
+        s = s.replace(/^```[^\r\n]*\r?\n/, '');
+        s = s.replace(/\r?\n```[ \t]*$/, '');
+        s = s.trim();
 
-        /**
-         * Remove closing fence, if present
-         *
-         * \r?\n          – newline before the closing fence
-         * ```            – three literal backticks
-         * [ \t]*         – optional trailing spaces or tabs
-         * $              – end of string
-         */
-        const withoutCloseString = withoutOpenString.replace(/\r?\n```[ \t]*$/, '');
-
-        // final trim to remove any leftover whitespace before return:
-        return withoutCloseString.trim();
+        // If model echoed a full fence block only, empty is correct
+        return s;
     }
 
     private debounce(delay: number, token: vscode.CancellationToken): Promise<void> {
@@ -202,7 +169,14 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
         context: vscode.InlineCompletionContext,
         token: vscode.CancellationToken,
     ): Promise<vscode.InlineCompletionItem[] | vscode.InlineCompletionList | undefined> {
+        this.debugLog(
+            `PROVIDE scheme=${document.uri.scheme} lang=${document.languageId} ` +
+            `trigger=${context.triggerKind} enabled=${this.configHandler.autopilotEnabled} ` +
+            `pos=${cursorPosition.line}:${cursorPosition.character}`
+        );
+
         if (!this.configHandler.autopilotEnabled) {
+            this.debugLog('SKIP disabled');
             return undefined;
         }
 
@@ -219,16 +193,16 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
 
         try {
             if (context.triggerKind === vscode.InlineCompletionTriggerKind.Automatic) {
-                // cancel completion if user only wants manual trigger:
                 if (this.configHandler.suggestionTrigger === "manual") {
+                    this.debugLog('SKIP manual-only mode');
                     return undefined;
                 }
 
-                // use delay only for automatic trigger:
                 await this.debounce(this.configHandler.autocompleteDelayMs, token);
             }
 
             if (token.isCancellationRequested) {
+                this.debugLog('SKIP cancelled after debounce');
                 return undefined;
             }
 
@@ -237,7 +211,14 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
             const temperature = this.configHandler.temperature;
             const num_ctx = this.configHandler.contextSize;
             const num_predict = this.configHandler.maxAutocompleteTokens;
-            const stop = this.configHandler.stopSequences;
+            // Prefer mild stops — "\\n\\n" as default often kills useful completions early
+            // and some models emit nothing useful under aggressive stop lists.
+            let stop = this.configHandler.stopSequences;
+            if (!stop || stop.length === 0) {
+                stop = ["```", "<EOT>"];
+            }
+
+            this.debugLog(`REQUEST model=${model} promptChars=${prompt.length} num_predict=${num_predict}`);
 
             const responseString = await this.ollamaClient.generateResponse(
                 {
@@ -254,10 +235,15 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
             );
 
             if (token.isCancellationRequested) {
+                this.debugLog('SKIP cancelled after generate');
                 return undefined;
             }
 
             const cleanedCodeCompletion = this.cleanResponseString(responseString);
+            this.debugLog(
+                `RESPONSE rawLen=${(responseString || '').length} cleanLen=${cleanedCodeCompletion.length} ` +
+                `preview=${JSON.stringify(cleanedCodeCompletion.slice(0, 80))}`
+            );
 
             if (!cleanedCodeCompletion) {
                 return undefined;
@@ -270,6 +256,8 @@ export class AutopilotProvider implements vscode.InlineCompletionItemProvider {
                 ),
             ];
         } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            this.debugLog(`ERROR ${msg}`);
             return undefined;
         }
         finally {
